@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tanque 01 | Sistemas IoT ARIO04</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- Cliente MQTT para navegador (MQTT sobre WebSocket) -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<!-- Generador de códigos QR -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  /* Paleta tipo HMI de alto desempeño (ISA-101): gris neutro, color solo para estado y fluido */
+  :root {
+    --bg: #E3E5E8; --panel: #F5F6F7; --ink: #1C1F22; --muted: #5B636B;
+    --line: #B6BCC2; --pipe: #8E969E; --red: #E2001A; --fluid: #2F80C0;
+    --fluid-soft: #A9CBE6; --run: #1F8A4C; --warn: #D99600; --radius: 6px;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1E2226; --panel: #282D32; --ink: #E8EBEE; --muted: #A2AAB2;
+      --line: #454C53; --pipe: #6C757E; --fluid: #4C9BD8; --fluid-soft: #2A4F6E;
+      --run: #3DBA72; --warn: #F0B429;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1E2226; --panel: #282D32; --ink: #E8EBEE; --muted: #A2AAB2;
+    --line: #454C53; --pipe: #6C757E; --fluid: #4C9BD8; --fluid-soft: #2A4F6E;
+    --run: #3DBA72; --warn: #F0B429;
+  }
+  *, *::before, *::after { box-sizing: inherit; }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Montserrat", "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 15px; line-height: 1.45; font-variant-numeric: tabular-nums;
+  }
+  button, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--fluid); outline-offset: 2px; }
+
+  header { display: flex; align-items: stretch; gap: 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .brand { background: var(--red); color: #fff; font-weight: 700; letter-spacing: .02em; padding: 14px 18px; display: flex; align-items: center; font-size: 17px; }
+  .title { display: flex; flex-direction: column; justify-content: center; padding: 8px 0; min-width: 0; }
+  .title h1 { margin: 0; font-size: 19px; font-weight: 700; }
+  .title p { margin: 0; color: var(--muted); font-size: 13px; }
+  .head-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; padding: 8px 16px 8px 0; flex-wrap: wrap; justify-content: flex-end; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--pipe); flex: none; }
+  .status[data-s="ok"] .dot { background: var(--run); }
+  .status[data-s="sim"] .dot { background: var(--fluid); }
+  .status[data-s="err"] .dot { background: var(--red); }
+  .status[data-s="wait"] .dot { background: var(--warn); }
+  .btn { border: 1px solid var(--line); background: var(--bg); border-radius: var(--radius); padding: 7px 14px; cursor: pointer; font-weight: 600; font-size: 13px; }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
+
+  main { max-width: 1280px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+  section > h2 { margin: 0; font-size: 14px; font-weight: 600; padding: 10px 14px; border-bottom: 1px solid var(--line); color: var(--muted); }
+
+  /* Mímico */
+  .mimic svg { display: block; width: 100%; height: auto; }
+  .tag { font-size: 12px; font-weight: 700; fill: var(--ink); }
+  .tagval { font-size: 13px; font-weight: 600; fill: var(--muted); }
+  .tagval.stale { opacity: .35; }
+  .pipe-outer { stroke: var(--pipe); stroke-width: 12; fill: none; stroke-linecap: square; }
+  .pipe-inner { stroke: var(--fluid); stroke-width: 5; fill: none; stroke-dasharray: 10 12; opacity: 0; }
+  .flowing .pipe-inner { opacity: 1; animation: flow var(--flow-dur, 1s) linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -22; } }
+  .impeller { transform-origin: 340px 250px; transform-box: view-box; }
+  .running .impeller { animation: spin var(--spin-dur, 1s) linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pump-body { fill: var(--panel); stroke: var(--pipe); stroke-width: 3; }
+  .running .pump-body { stroke: var(--run); }
+  .tank-wall { fill: none; stroke: var(--pipe); stroke-width: 3; }
+  .tank-wall.alarm { stroke: var(--warn); stroke-width: 4; }
+  #levelFill { fill: var(--fluid-soft); transition: y .6s ease, height .6s ease; }
+  #levelLine { stroke: var(--fluid); stroke-width: 2; transition: y1 .6s ease, y2 .6s ease; }
+
+  /* Lecturas */
+  .readings { display: grid; grid-template-columns: 1fr 1fr; }
+  .reading { padding: 12px 14px; border-bottom: 1px solid var(--line); min-width: 0; }
+  .reading:nth-child(odd) { border-right: 1px solid var(--line); }
+  .reading .label { font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
+  .reading .value { font-size: 28px; font-weight: 700; line-height: 1.15; margin: 4px 0 8px; }
+  .reading .unit { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+  .reading.stale .value { opacity: .35; }
+  .bar { height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; border: 1px solid var(--line); }
+  .bar i { display: block; height: 100%; width: 0; background: var(--fluid); transition: width .6s ease; }
+  .badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 4px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+  .badge.on { background: var(--run); border-color: var(--run); color: #fff; }
+  .badge.warn { background: var(--warn); border-color: var(--warn); color: #1C1F22; }
+
+  /* Tabla de tópicos */
+  .topics { grid-column: 2; }
+  .tbl-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td.age.old { color: var(--red); font-weight: 600; }
+  code { font-family: Consolas, "Courier New", monospace; font-size: 12.5px; }
+
+  /* Tendencias */
+  .trends { grid-column: 1 / -1; }
+  .trend-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
+  .trend { padding: 10px 14px 14px; min-width: 0; }
+  .trend + .trend { border-left: 1px solid var(--line); }
+  .trend h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+  .trend canvas { width: 100%; height: 160px; display: block; }
+
+  .raw { grid-column: 1 / -1; }
+  .raw summary { cursor: pointer; padding: 10px 14px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .raw pre { margin: 0; padding: 0 14px 14px; overflow-x: auto; font-size: 12.5px; font-family: Consolas, "Courier New", monospace; }
+
+  /* Configuración */
+  dialog { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--ink); padding: 0; width: min(580px, 94vw); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .dlg-head { padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .dlg-head h2 { margin: 0; font-size: 17px; }
+  .dlg-head p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+  .dlg-body { padding: 14px 18px; display: grid; gap: 14px; max-height: 65vh; overflow-y: auto; }
+  fieldset { border: 1px solid var(--line); border-radius: var(--radius); margin: 0; padding: 10px 12px 12px; display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
+  legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
+  label { display: grid; gap: 3px; font-size: 12.5px; color: var(--muted); }
+  label.full { grid-column: 1 / -1; }
+  input { border: 1px solid var(--line); background: var(--bg); border-radius: 4px; padding: 7px 9px; width: 100%; color: var(--ink); }
+  .dlg-foot { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+  .hint { font-size: 12px; color: var(--muted); margin: 0; grid-column: 1 / -1; }
+
+  /* Diálogo QR */
+  .qr-body { padding: 18px; display: grid; gap: 14px; justify-items: center; text-align: center; }
+  .qr-box { background: #fff; padding: 14px; border-radius: var(--radius); border: 1px solid var(--line); line-height: 0; }
+  .qr-box img, .qr-box canvas { width: 240px; height: 240px; image-rendering: pixelated; }
+  .qr-url { font-size: 12.5px; color: var(--muted); word-break: break-all; max-width: 100%; margin: 0; }
+  .qr-opt { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); }
+  .qr-opt input { width: auto; }
+  .qr-warn { font-size: 12.5px; color: var(--red); margin: 0; }
+
+  @media (max-width: 860px) {
+    main { grid-template-columns: 1fr; padding: 10px; gap: 10px; }
+    .topics { grid-column: auto; }
+    .trend-grid { grid-template-columns: 1fr; }
+    .trend + .trend { border-left: 0; border-top: 1px solid var(--line); }
+    .title p { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .flowing .pipe-inner, .running .impeller { animation: none; }
+    #levelFill, #levelLine, .bar i { transition: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">INACAP</div>
+  <div class="title">
+    <h1>Tanque 01</h1>
+    <p>Sistemas IoT ARIO04, monitoreo por MQTT</p>
+  </div>
+  <div class="head-actions">
+    <div class="status" id="status" data-s="off"><span class="dot"></span><span id="statusText">Desconectado</span></div>
+    <button class="btn" id="btnSim" type="button">Simular</button>
+    <button class="btn" id="btnQr" type="button">Código QR</button>
+    <button class="btn primary" id="btnCfg" type="button">Configurar</button>
+  </div>
+</header>
+
+<main>
+  <section class="mimic">
+    <h2>Proceso</h2>
+    <svg viewBox="0 0 640 330" role="img" aria-label="Diagrama del tanque, bomba y línea de descarga con transmisores de nivel, flujo y presión">
+      <defs><clipPath id="tankClip"><rect x="62" y="42" width="156" height="236" rx="4"/></clipPath></defs>
+      <g clip-path="url(#tankClip)">
+        <rect id="levelFill" x="62" y="278" width="156" height="0"/>
+        <line id="levelLine" x1="62" x2="218" y1="278" y2="278"/>
+      </g>
+      <rect id="tankWall" class="tank-wall" x="60" y="40" width="160" height="240" rx="6"/>
+      <g stroke="var(--pipe)" stroke-width="1.5">
+        <line x1="220" y1="40" x2="230" y2="40"/><line x1="220" y1="100" x2="226" y2="100"/>
+        <line x1="220" y1="160" x2="230" y2="160"/><line x1="220" y1="220" x2="226" y2="220"/>
+        <line x1="220" y1="280" x2="230" y2="280"/>
+      </g>
+      <g font-size="11" fill="var(--muted)"><text x="234" y="44">100</text><text x="234" y="164">50</text><text x="234" y="284">0</text></g>
+      <text id="tankPct" x="140" y="168" text-anchor="middle" font-size="26" font-weight="700" fill="var(--ink)">--</text>
+      <line x1="140" y1="40" x2="140" y2="24" stroke="var(--pipe)" stroke-width="2"/>
+      <g transform="translate(92 4)">
+        <rect width="96" height="20" rx="3" fill="var(--panel)" stroke="var(--pipe)"/>
+        <text x="48" y="14" text-anchor="middle" class="tag">LIT-01</text>
+      </g>
+
+      <g id="suction">
+        <path class="pipe-outer" d="M220 250 H306"/>
+        <path class="pipe-inner" d="M220 250 H306"/>
+      </g>
+      <g id="pump">
+        <circle class="pump-body" cx="340" cy="250" r="34"/>
+        <g class="impeller" stroke="var(--pipe)" stroke-width="4" stroke-linecap="round">
+          <line x1="340" y1="250" x2="340" y2="224"/>
+          <line x1="340" y1="250" x2="362.5" y2="263"/>
+          <line x1="340" y1="250" x2="317.5" y2="263"/>
+          <circle cx="340" cy="250" r="5" fill="var(--pipe)" stroke="none"/>
+        </g>
+        <text x="340" y="306" text-anchor="middle" class="tag">P-01</text>
+        <text id="pumpTag" x="340" y="324" text-anchor="middle" class="tagval">--</text>
+      </g>
+      <g id="discharge">
+        <path class="pipe-outer" d="M340 216 V150 H600"/>
+        <path class="pipe-inner" d="M340 216 V150 H600"/>
+      </g>
+      <polygon points="600,138 622,150 600,162" fill="var(--pipe)"/>
+
+      <!-- FIT-01 -->
+      <circle cx="420" cy="150" r="22" fill="var(--panel)" stroke="var(--pipe)" stroke-width="3"/>
+      <text x="420" y="155" text-anchor="middle" class="tag" font-size="11">FIT</text>
+      <text x="420" y="116" text-anchor="middle" class="tag">FIT-01</text>
+      <text id="flowTag" x="420" y="194" text-anchor="middle" class="tagval">--</text>
+      <!-- PIT-01 -->
+      <line x1="520" y1="150" x2="520" y2="128" stroke="var(--pipe)" stroke-width="2"/>
+      <circle cx="520" cy="112" r="17" fill="var(--panel)" stroke="var(--pipe)" stroke-width="3"/>
+      <text x="520" y="116" text-anchor="middle" class="tag" font-size="11">PIT</text>
+      <text x="520" y="84" text-anchor="middle" class="tag">PIT-01</text>
+      <text id="presTag" x="520" y="194" text-anchor="middle" class="tagval">--</text>
+      <text x="630" y="186" text-anchor="end" font-size="12" fill="var(--muted)">a proceso</text>
+    </svg>
+  </section>
+
+  <section>
+    <h2>Lecturas</h2>
+    <div class="readings">
+      <div class="reading" id="rdNivel">
+        <div class="label"><span>Nivel, LIT-01</span><span class="badge warn" id="lvlBadge" hidden></span></div>
+        <div class="value"><span id="lvlVal">--</span><span class="unit" id="lvlUnit">%</span></div>
+        <div class="bar"><i id="lvlBar"></i></div>
+      </div>
+      <div class="reading" id="rdFlujo">
+        <div class="label"><span>Flujo, FIT-01</span></div>
+        <div class="value"><span id="flwVal">--</span><span class="unit" id="flwUnit">L/min</span></div>
+        <div class="bar"><i id="flwBar"></i></div>
+      </div>
+      <div class="reading" id="rdPresion">
+        <div class="label"><span>Presión, PIT-01</span></div>
+        <div class="value"><span id="prsVal">--</span><span class="unit" id="prsUnit">bar</span></div>
+        <div class="bar"><i id="prsBar"></i></div>
+      </div>
+      <div class="reading" id="rdRpm">
+        <div class="label"><span>Bomba P-01</span><span class="badge" id="pmpBadge">Sin dato</span></div>
+        <div class="value"><span id="rpmVal">--</span><span class="unit">rpm</span></div>
+        <div class="bar"><i id="rpmBar"></i></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="topics">
+    <h2>Tópicos suscritos</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Variable</th><th>Tópico</th><th>Último dato</th></tr></thead>
+        <tbody id="topicRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="trends">
+    <h2>Tendencias, últimos 5 minutos</h2>
+    <div class="trend-grid">
+      <div class="trend"><h3>Nivel</h3><canvas id="cNivel" aria-label="Tendencia de nivel"></canvas></div>
+      <div class="trend"><h3>Flujo</h3><canvas id="cFlujo" aria-label="Tendencia de flujo"></canvas></div>
+      <div class="trend"><h3>Presión</h3><canvas id="cPresion" aria-label="Tendencia de presión"></canvas></div>
+    </div>
+  </section>
+
+  <section class="raw">
+    <details>
+      <summary>Mensajes MQTT recibidos (para depurar)</summary>
+      <pre id="rawMsg">Sin mensajes todavía.</pre>
+    </details>
+  </section>
+</main>
+
+<dialog id="cfg">
+  <form method="dialog" id="cfgForm">
+    <div class="dlg-head">
+      <h2>Conexión MQTT</h2>
+      <p>La página corre en HTTPS (GitHub Pages), así que el broker debe aceptar WebSocket seguro (wss://).</p>
+    </div>
+    <div class="dlg-body">
+      <fieldset>
+        <legend>Broker</legend>
+        <label class="full">URL del broker (WebSocket)<input name="url" required></label>
+        <label>Usuario (opcional)<input name="user" autocomplete="off"></label>
+        <label>Contraseña (opcional)<input name="pass" type="password" autocomplete="off"></label>
+        <p class="hint">Todo lo que escribas aquí se guarda solo en este navegador.</p>
+      </fieldset>
+      <fieldset>
+        <legend>Tópicos</legend>
+        <label>Nivel<input name="tNivel"></label>
+        <label>Flujo<input name="tFlujo"></label>
+        <label>Presión<input name="tPresion"></label>
+        <label>Estado bomba<input name="tBomba"></label>
+        <label>Velocidad bomba<input name="tRpm"></label>
+        <p class="hint">Deja vacío el tópico de una variable que no uses. El mensaje puede ser un número solo (12.5) o un JSON como {"value": 12.5}.</p>
+      </fieldset>
+      <fieldset>
+        <legend>Rangos y alarmas</legend>
+        <label>Nivel máximo<input name="nivelMax" type="number" step="any" required></label>
+        <label>Unidad de nivel<input name="nivelUnit"></label>
+        <label>Flujo máximo<input name="flujoMax" type="number" step="any" required></label>
+        <label>Unidad de flujo<input name="flujoUnit"></label>
+        <label>Presión máxima<input name="presionMax" type="number" step="any" required></label>
+        <label>Unidad de presión<input name="presionUnit"></label>
+        <label>Velocidad máxima (rpm)<input name="rpmMax" type="number" step="any" required></label>
+        <label>Tiempo sin datos (s)<input name="staleSec" type="number" step="1" min="2" required></label>
+        <label>Alarma nivel alto (%)<input name="nivelAlto" type="number" step="any" required></label>
+        <label>Alarma nivel bajo (%)<input name="nivelBajo" type="number" step="any" required></label>
+      </fieldset>
+    </div>
+    <div class="dlg-foot">
+      <button class="btn" type="button" id="btnReset">Restaurar valores</button>
+      <button class="btn" value="cancel" formnovalidate>Cancelar</button>
+      <button class="btn primary" value="save">Guardar y conectar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="qrDlg">
+  <form method="dialog">
+    <div class="dlg-head">
+      <h2>Acceso remoto</h2>
+      <p>Escanea con la cámara del celular para abrir este dashboard.</p>
+    </div>
+    <div class="qr-body">
+      <div class="qr-box" id="qrBox" aria-label="Código QR del enlace al dashboard"></div>
+      <label class="qr-opt"><input type="checkbox" id="qrCfg" checked> Incluir broker y tópicos actuales (sin contraseña)</label>
+      <p class="qr-url" id="qrUrl"></p>
+      <p class="qr-warn" id="qrWarn" hidden></p>
+    </div>
+    <div class="dlg-foot">
+      <button class="btn" type="button" id="btnCopy">Copiar enlace</button>
+      <button class="btn" type="button" id="btnQrPng">Descargar imagen</button>
+      <button class="btn primary" value="close">Cerrar</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(() => {
+  // ---------- Configuración ----------
+  const DEFAULTS = {
+    url: "wss://broker.emqx.io:8084/mqtt", user: "", pass: "",
+    tNivel: "lit_01", tFlujo: "fit_01", tPresion: "pit_01", tBomba: "", tRpm: "",
+    nivelMax: 100, nivelUnit: "%",
+    flujoMax: 50, flujoUnit: "L/min",
+    presionMax: 10, presionUnit: "bar",
+    rpmMax: 3000, staleSec: 10, nivelAlto: 90, nivelBajo: 10
+  };
+  // Variable -> clave de configuración de su tópico
+  const VARS = [
+    { field: "nivel",   cfgKey: "tNivel",   name: "Nivel",           row: "rdNivel",   tag: null },
+    { field: "flujo",   cfgKey: "tFlujo",   name: "Flujo",           row: "rdFlujo",   tag: "flowTag" },
+    { field: "presion", cfgKey: "tPresion", name: "Presión",         row: "rdPresion", tag: "presTag" },
+    { field: "bomba",   cfgKey: "tBomba",   name: "Estado bomba",    row: "rdRpm",     tag: "pumpTag" },
+    { field: "rpm",     cfgKey: "tRpm",     name: "Velocidad bomba", row: "rdRpm",     tag: "pumpTag" }
+  ];
+  const STORE_KEY = "ario04-dash-cfg-v2";
+  let cfg = loadCfg();
+
+  // Si se abrió desde un enlace con parámetros (QR), aplica esa configuración y limpia la URL
+  (function applyUrlParams() {
+    const q = new URLSearchParams(location.search);
+    let changed = false;
+    Object.keys(DEFAULTS).forEach(k => {
+      if (k === "pass" || !q.has(k)) return;
+      const v = q.get(k);
+      cfg[k] = typeof DEFAULTS[k] === "number" ? (Number.isFinite(parseFloat(v)) ? parseFloat(v) : DEFAULTS[k]) : v;
+      changed = true;
+    });
+    if (changed) {
+      saveCfg();
+      try { window.history.replaceState(null, "", location.pathname + location.hash); } catch (e) {}
+    }
+  })();
+
+  function loadCfg() {
+    try { const raw = localStorage.getItem(STORE_KEY); return raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS }; }
+    catch (e) { return { ...DEFAULTS }; }
+  }
+  function saveCfg() { try { localStorage.setItem(STORE_KEY, JSON.stringify(cfg)); } catch (e) {} }
+
+  // ---------- Utilidades ----------
+  const $ = id => document.getElementById(id);
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const toNum = v => { const n = typeof v === "string" ? parseFloat(v.replace(",", ".")) : Number(v); return Number.isFinite(n) && v !== "" && v !== null && typeof v !== "boolean" ? n : null; };
+  const toBool = v => {
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    if (typeof v === "string") {
+      const s = v.trim().toLowerCase();
+      if (["1", "on", "true", "run", "marcha", "encendida", "encendido"].includes(s)) return true;
+      if (["0", "off", "false", "stop", "parada", "detenida", "apagada", "apagado"].includes(s)) return false;
+    }
+    return null;
+  };
+  // Acepta "12.5", 12.5, {"value":12.5}, {"valor":12.5} o el primer número/booleano de un objeto
+  function parsePayload(text) {
+    const t = text.trim();
+    let v;
+    try { v = JSON.parse(t); } catch (e) { return t; }
+    if (v && typeof v === "object") {
+      for (const k of ["value", "valor", "val", "v"]) if (k in v) return v[k];
+      return Object.values(v).find(x => typeof x === "number" || typeof x === "boolean");
+    }
+    return v;
+  }
+  const fmt = (v, d = 1) => v == null ? "--" : v.toLocaleString("es-CL", { minimumFractionDigits: d, maximumFractionDigits: d });
+
+  // ---------- Estado ----------
+  const state = { nivel: null, flujo: null, presion: null, bomba: null, rpm: null };
+  const lastSeen = {};           // field -> timestamp
+  const history = [];            // {t, nivel, flujo, presion}
+  const rawLog = [];
+  const WINDOW_MS = 5 * 60 * 1000;
+  const TANK_TOP = 42, TANK_H = 236;
+
+  const isStale = f => !lastSeen[f] || (Date.now() - lastSeen[f]) / 1000 > cfg.staleSec;
+
+  // ---------- Renderizado ----------
+  function render() {
+    const nPct = state.nivel == null ? 0 : clamp(state.nivel / cfg.nivelMax, 0, 1);
+    const fPct = state.flujo == null ? 0 : clamp(state.flujo / cfg.flujoMax, 0, 1);
+    const pPct = state.presion == null ? 0 : clamp(state.presion / cfg.presionMax, 0, 1);
+    const rPct = state.rpm == null ? 0 : clamp(state.rpm / cfg.rpmMax, 0, 1);
+
+    const h = TANK_H * nPct, y = TANK_TOP + TANK_H - h;
+    $("levelFill").setAttribute("y", y); $("levelFill").setAttribute("height", h);
+    $("levelLine").setAttribute("y1", y); $("levelLine").setAttribute("y2", y);
+    $("tankPct").textContent = state.nivel == null ? "--" : `${fmt(nPct * 100, 0)} %`;
+
+    const pctVal = nPct * 100;
+    let alarm = "";
+    if (state.nivel != null && pctVal >= cfg.nivelAlto) alarm = "Nivel alto";
+    else if (state.nivel != null && pctVal <= cfg.nivelBajo) alarm = "Nivel bajo";
+    $("lvlBadge").hidden = !alarm; $("lvlBadge").textContent = alarm;
+    $("tankWall").classList.toggle("alarm", !!alarm);
+
+    $("lvlVal").textContent = fmt(state.nivel); $("lvlUnit").textContent = cfg.nivelUnit; $("lvlBar").style.width = `${nPct * 100}%`;
+    $("flwVal").textContent = fmt(state.flujo); $("flwUnit").textContent = cfg.flujoUnit; $("flwBar").style.width = `${fPct * 100}%`;
+    $("prsVal").textContent = fmt(state.presion, 2); $("prsUnit").textContent = cfg.presionUnit; $("prsBar").style.width = `${pPct * 100}%`;
+    $("rpmVal").textContent = fmt(state.rpm, 0); $("rpmBar").style.width = `${rPct * 100}%`;
+    $("flowTag").textContent = state.flujo == null ? "--" : `${fmt(state.flujo)} ${cfg.flujoUnit}`;
+    $("presTag").textContent = state.presion == null ? "--" : `${fmt(state.presion, 2)} ${cfg.presionUnit}`;
+
+    // Bomba: si no hay tópico de estado, se deduce de la velocidad (> 0 rpm = en marcha)
+    let on = state.bomba;
+    if (on == null && state.rpm != null) on = state.rpm > 0;
+    const pump = $("pump"), pb = $("pmpBadge");
+    pump.classList.toggle("running", on === true && (state.rpm == null || state.rpm > 0));
+    pump.style.setProperty("--spin-dur", `${clamp(2.4 - 2.1 * rPct, 0.3, 2.4)}s`); // visual, no velocidad real
+    pb.textContent = on == null ? "Sin dato" : on ? "En marcha" : "Detenida";
+    pb.className = "badge" + (on ? " on" : "");
+    $("pumpTag").textContent = on == null ? "--" : on ? (state.rpm == null ? "En marcha" : `${fmt(state.rpm, 0)} rpm`) : "Detenida";
+
+    const flowing = (state.flujo ?? 0) > 0.01;
+    const dur = `${clamp(2 - 1.7 * fPct, 0.3, 2)}s`;
+    ["suction", "discharge"].forEach(id => { $(id).classList.toggle("flowing", flowing); $(id).style.setProperty("--flow-dur", dur); });
+
+    renderStale();
+  }
+
+  function renderStale() {
+    const rows = {};
+    VARS.forEach(v => {
+      if (!cfg[v.cfgKey]) return;
+      const s = isStale(v.field);
+      rows[v.row] = (rows[v.row] ?? false) || s;
+      if (v.tag) $(v.tag).classList.toggle("stale", s);
+    });
+    ["rdNivel", "rdFlujo", "rdPresion", "rdRpm"].forEach(r => $(r).classList.toggle("stale", rows[r] !== false));
+    // Tabla de tópicos
+    const now = Date.now();
+    $("topicRows").innerHTML = VARS.filter(v => cfg[v.cfgKey]).map(v => {
+      const t = lastSeen[v.field];
+      const age = t ? Math.round((now - t) / 1000) : null;
+      const txt = age == null ? "Sin datos" : age < 2 ? "Ahora" : `Hace ${age} s`;
+      return `<tr><td>${v.name}</td><td><code>${escapeHtml(cfg[v.cfgKey])}</code></td><td class="age${isStale(v.field) ? " old" : ""}">${txt}</td></tr>`;
+    }).join("") || `<tr><td colspan="3">No hay tópicos configurados.</td></tr>`;
+  }
+  const escapeHtml = s => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  // ---------- Datos entrantes ----------
+  function ingest(field, rawValue, topic, text) {
+    const val = field === "bomba" ? toBool(rawValue) : toNum(rawValue);
+    const time = new Date().toLocaleTimeString("es-CL");
+    rawLog.unshift(`${time}  ${topic}  ${text}${val == null ? "   (valor no reconocido)" : ""}`);
+    rawLog.length = Math.min(rawLog.length, 30);
+    $("rawMsg").textContent = rawLog.join("\n");
+    if (val == null) return;
+    state[field] = val;
+    lastSeen[field] = Date.now();
+    if (["nivel", "flujo", "presion"].includes(field)) {
+      history.push({ t: Date.now(), nivel: state.nivel, flujo: state.flujo, presion: state.presion });
+      while (history.length && history[0].t < Date.now() - WINDOW_MS) history.shift();
+    }
+    render();
+  }
+
+  setInterval(renderStale, 1000);
+
+  // ---------- Tendencias ----------
+  function drawChart(canvas, key, max, color) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const css = getComputedStyle(document.documentElement);
+    const line = css.getPropertyValue("--line").trim(), muted = css.getPropertyValue("--muted").trim();
+    const padL = 40, padB = 20, padT = 6, padR = 8, pw = w - padL - padR, ph = h - padT - padB;
+    ctx.font = "11px Montserrat, sans-serif"; ctx.fillStyle = muted; ctx.strokeStyle = line; ctx.lineWidth = 1;
+    const dec = max < 20 ? 1 : 0;
+    for (let i = 0; i <= 4; i++) {
+      const y = padT + ph * (i / 4);
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.textAlign = "right"; ctx.textBaseline = "middle"; ctx.fillText(fmt(max * (1 - i / 4), dec), padL - 6, y);
+    }
+    ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillText("-5 min", padL, h - padB + 5);
+    ctx.textAlign = "right"; ctx.fillText("ahora", w - padR, h - padB + 5);
+    const now = Date.now();
+    const pts = history.filter(p => p[key] != null).map(p => [padL + pw * (1 - (now - p.t) / WINDOW_MS), padT + ph * (1 - clamp(p[key] / max, 0, 1))]);
+    if (pts.length < 2) return;
+    ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+    ctx.lineTo(pts[pts.length - 1][0], padT + ph); ctx.lineTo(pts[0][0], padT + ph); ctx.closePath();
+    ctx.globalAlpha = 0.12; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
+  }
+  function drawTrends() {
+    const fluid = getComputedStyle(document.documentElement).getPropertyValue("--fluid").trim();
+    drawChart($("cNivel"), "nivel", cfg.nivelMax, fluid);
+    drawChart($("cFlujo"), "flujo", cfg.flujoMax, fluid);
+    drawChart($("cPresion"), "presion", cfg.presionMax, fluid);
+  }
+  window.addEventListener("resize", drawTrends);
+  setInterval(drawTrends, 1000);
+
+  // ---------- MQTT ----------
+  function setStatus(s, text) { $("status").dataset.s = s; $("statusText").textContent = text; }
+  let client = null;
+
+  function connect() {
+    stopSim();
+    if (client) { try { client.end(true); } catch (e) {} client = null; }
+    if (typeof mqtt === "undefined") { setStatus("err", "No cargó la librería MQTT"); return; }
+    if (location.protocol === "https:" && cfg.url.startsWith("ws://")) { setStatus("err", "Usa wss:// en una página HTTPS"); return; }
+    const topicMap = {};
+    VARS.forEach(v => { const t = (cfg[v.cfgKey] || "").trim(); if (t) topicMap[t] = v.field; });
+    const topics = Object.keys(topicMap);
+    if (!topics.length) { setStatus("err", "No hay tópicos configurados"); return; }
+
+    let host = cfg.url; try { host = new URL(cfg.url).hostname; } catch (e) {}
+    setStatus("wait", `Conectando a ${host}`);
+    try {
+      client = mqtt.connect(cfg.url, {
+        clientId: "ario04-dash-" + Math.random().toString(16).slice(2, 10),
+        username: cfg.user || undefined, password: cfg.pass || undefined,
+        clean: true, reconnectPeriod: 4000, connectTimeout: 8000
+      });
+    } catch (e) { setStatus("err", "URL de broker no válida"); return; }
+
+    client.on("connect", () => {
+      client.subscribe(topics, { qos: 0 }, err => setStatus(err ? "err" : "ok", err ? "Error al suscribirse" : `Conectado a ${host}, ${topics.length} tópicos`));
+    });
+    client.on("reconnect", () => setStatus("wait", `Reintentando ${host}`));
+    client.on("offline", () => setStatus("err", "Sin conexión con el broker"));
+    client.on("error", err => setStatus("err", `Error: ${err.message}`));
+    client.on("message", (topic, payload) => {
+      const field = topicMap[topic];
+      const text = payload.toString();
+      if (field) ingest(field, parsePayload(text), topic, text);
+    });
+  }
+
+  // ---------- Simulación local ----------
+  let simTimer = null;
+  const sim = { nivel: 55, bomba: false, rpm: 0 };
+  function startSim() {
+    if (client) { try { client.end(true); } catch (e) {} client = null; }
+    setStatus("sim", "Simulación local");
+    $("btnSim").textContent = "Detener simulación";
+    simTimer = setInterval(() => {
+      const pct = sim.nivel / cfg.nivelMax * 100;
+      if (pct > 75) sim.bomba = true;
+      if (pct < 30) sim.bomba = false;
+      const target = sim.bomba ? cfg.rpmMax * 0.48 : 0;
+      sim.rpm += (target - sim.rpm) * 0.35; if (sim.rpm < 5) sim.rpm = 0;
+      const k = sim.rpm / (cfg.rpmMax * 0.48);
+      const flujo = Math.max(0, sim.bomba ? cfg.flujoMax * 0.5 * k + (Math.random() - .5) : 0);
+      const presion = Math.max(0, cfg.presionMax * 0.45 * k * k + (Math.random() - .5) * 0.05 * cfg.presionMax * k);
+      sim.nivel = clamp(sim.nivel + (cfg.flujoMax * 0.18 - flujo) * 0.12 * cfg.nivelMax / 100, 0, cfg.nivelMax);
+      const r = (x, d = 1) => String(Math.round(x * 10 ** d) / 10 ** d);
+      const msgs = { nivel: r(sim.nivel), flujo: r(flujo), presion: r(presion, 2), bomba: sim.bomba ? "1" : "0", rpm: r(sim.rpm, 0) };
+      VARS.forEach(v => { if (cfg[v.cfgKey]) ingest(v.field, parsePayload(msgs[v.field]), cfg[v.cfgKey], msgs[v.field]); });
+    }, 1000);
+  }
+  function stopSim() { if (simTimer) { clearInterval(simTimer); simTimer = null; } $("btnSim").textContent = "Simular"; }
+  $("btnSim").addEventListener("click", () => { if (simTimer) { stopSim(); connect(); } else startSim(); });
+
+  // ---------- Diálogo ----------
+  const dlg = $("cfg"), form = $("cfgForm");
+  function fillForm(c) { Object.keys(DEFAULTS).forEach(k => { if (form.elements[k]) form.elements[k].value = c[k]; }); }
+  $("btnCfg").addEventListener("click", () => { fillForm(cfg); dlg.showModal(); });
+  $("btnReset").addEventListener("click", () => fillForm(DEFAULTS));
+  dlg.addEventListener("close", () => {
+    if (dlg.returnValue !== "save") return;
+    const next = { ...cfg };
+    Object.keys(DEFAULTS).forEach(k => {
+      const el = form.elements[k]; if (!el) return;
+      next[k] = typeof DEFAULTS[k] === "number" ? (toNum(el.value) ?? DEFAULTS[k]) : el.value.trim();
+    });
+    cfg = next; saveCfg();
+    history.length = 0;
+    Object.keys(state).forEach(k => { state[k] = null; delete lastSeen[k]; });
+    render(); drawTrends(); connect();
+  });
+
+  // ---------- Código QR ----------
+  const qrDlg = $("qrDlg");
+  function shareUrl() {
+    const base = location.origin + location.pathname;
+    if (!$("qrCfg").checked) return base;
+    const q = new URLSearchParams();
+    Object.keys(DEFAULTS).forEach(k => {
+      if (k === "pass" || k === "user") return;              // nunca credenciales en el QR
+      if (String(cfg[k]) !== String(DEFAULTS[k])) q.set(k, cfg[k]); // solo lo que difiere
+    });
+    const qs = q.toString();
+    return qs ? `${base}?${qs}` : base;
+  }
+  function drawQr() {
+    const url = shareUrl();
+    const box = $("qrBox"); box.innerHTML = "";
+    $("qrUrl").textContent = url;
+    const warn = $("qrWarn");
+    if (location.protocol === "file:") {
+      warn.hidden = false; warn.textContent = "Estás abriendo el archivo local. El QR funcionará cuando la página esté publicada en GitHub Pages.";
+    } else if (/^(localhost|127\.|192\.168\.|10\.)/.test(location.hostname)) {
+      warn.hidden = false; warn.textContent = "Esta dirección es local; solo abrirá en equipos de la misma red.";
+    } else warn.hidden = true;
+    if (typeof QRCode === "undefined") { box.textContent = "No cargó el generador de QR."; return; }
+    new QRCode(box, { text: url, width: 480, height: 480, colorDark: "#000000", colorLight: "#ffffff", correctLevel: QRCode.CorrectLevel.M });
+  }
+  $("btnQr").addEventListener("click", () => { drawQr(); qrDlg.showModal(); });
+  $("qrCfg").addEventListener("change", drawQr);
+  $("btnCopy").addEventListener("click", async () => {
+    const b = $("btnCopy");
+    try { await navigator.clipboard.writeText(shareUrl()); b.textContent = "Enlace copiado"; }
+    catch (e) { b.textContent = "No se pudo copiar"; }
+    setTimeout(() => (b.textContent = "Copiar enlace"), 1800);
+  });
+  $("btnQrPng").addEventListener("click", () => {
+    const c = $("qrBox").querySelector("canvas");
+    if (!c) return;
+    const a = document.createElement("a");
+    a.href = c.toDataURL("image/png"); a.download = "qr-dashboard-tanque01.png";
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+
+  render(); drawTrends(); connect();
+})();
+</script>
+</body>
+</html>
